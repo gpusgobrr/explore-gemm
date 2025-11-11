@@ -56,12 +56,14 @@ set(CUTLASS_AVAILABLE FALSE)
 # Location 1: Local third-party directory (preferred - should be CUTLASS 3.x)
 if(EXISTS ${CMAKE_SOURCE_DIR}/third-party/cutlass/include)
     set(CUTLASS_INCLUDE_DIR ${CMAKE_SOURCE_DIR}/third-party/cutlass/include)
+    set(CUTLASS_UTILS_INCLUDE_DIR ${CMAKE_SOURCE_DIR}/third-party/cutlass/tools/util/include)
     set(CUTLASS_AVAILABLE TRUE)
     message(STATUS "CUTLASS found at ${CUTLASS_INCLUDE_DIR} (using local installation)")
 endif()
 
 if(CUTLASS_AVAILABLE)
     include_directories(${CUTLASS_INCLUDE_DIR})
+    include_directories(${CUTLASS_UTILS_INCLUDE_DIR})
 endif()
 
 # Tests - each test now only compiles its specific CUDA kernel file
@@ -143,6 +145,26 @@ if(CUTLASS_AVAILABLE)
     set_target_properties(cutlass_autotunable PROPERTIES
         CUDA_SEPARABLE_COMPILATION ON
         POSITION_INDEPENDENT_CODE ON)
+
+    # FP4 GEMV example (CUTLASS example from scripts directory)
+    add_executable(fp4_gemv_example
+        ${CMAKE_SOURCE_DIR}/cuda/scripts/fp4_gemv.cu)
+    target_link_libraries(fp4_gemv_example "${TORCH_LIBRARIES}")
+
+    # Batched GEMM example (CUTLASS example from scripts directory)
+    add_executable(batched_gemm_example
+        ${CMAKE_SOURCE_DIR}/cuda/scripts/batched_gemm.cu)
+    target_link_libraries(batched_gemm_example "${TORCH_LIBRARIES}")
+
+    # Batched FP4 GEMV example (combined pattern from batched GEMM + FP4 GEMV)
+    add_executable(batched_fp4_gemv_example
+        ${CMAKE_SOURCE_DIR}/cuda/scripts/batched_fp4_gemv.cu)
+    target_link_libraries(batched_fp4_gemv_example "${TORCH_LIBRARIES}")
+
+    # Batched FP4 GEMV executable (accepts PyTorch tensors as inputs)
+    add_executable(batched_fp4_gemv_pytorch
+        ${CMAKE_SOURCE_DIR}/cuda/scripts/batched_fp4_gemv_pytorch.cu)
+    target_link_libraries(batched_fp4_gemv_pytorch "${TORCH_LIBRARIES}")
 endif()
 
 enable_testing()
