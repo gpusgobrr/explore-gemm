@@ -1,3 +1,46 @@
+/*
+ * Batched FP4 GEMV (General Matrix-Vector Multiply) with Block-Scaled Inputs/Outputs
+ *
+ * This example performs batched FP4 (4-bit floating point) GEMV operations with block-scaled
+ * quantization on NVIDIA SM100 (Blackwell) GPUs. The computation uses CUTLASS library for
+ * optimized kernel implementations and accepts PyTorch tensors as inputs.
+ *
+ * Architecture:
+ * ==============
+ * 1. KERNEL: CUTLASS GemvBlockScaled kernel (from CUTLASS library)
+ *    - Performs batched FP4 matrix-vector multiply with block scaling
+ *    - Configured with custom epilogue for output scaling
+ *    - SM100-specific optimizations for tensor cores
+ *
+ * 2. WRAPPER: launch_gemv_kernel()
+ *    - Accepts PyTorch tensors as inputs
+ *    - Calculates block scaling configuration (block counts, strides)
+ *    - Constructs CUTLASS Arguments and launches the kernel
+ *    - Handles performance profiling with CUDA events
+ *
+ * 3. MAIN: Entry point
+ *    - Parses command-line arguments
+ *    - Allocates PyTorch CUDA tensors
+ *    - Calculates block scaling configuration
+ *    - Calls wrapper to execute kernel
+ *    - Reports performance metrics (GFLOPs, memory bandwidth)
+ *
+ * Numeric Example (M=256, K=512, Batch=2):
+ * ==========================================
+ * Input matrix A:  (batch*M, K) = (512, 512)    [2 batches of 256x512 matrices]
+ * Vector B:        (batch*K, 1) = (1024, 1)     [2 batches of 512x1 vectors]
+ * Output D:        (batch*M, 1) = (512, 1)      [2 batches of 256x1 result vectors]
+ *
+ * Block Scaling (kVectorSize=16):
+ *   - Input A: Each 16-element block scaled by FP8 scale factor
+ *     k_blks = ceil(512 / 16) = 32 blocks in K dimension
+ *     m_blks = ceil(256 / 16) = 16 blocks in M dimension
+ *     SFA size = 16 * 16 * 32 * 1 * 2 batches = 16,384 scale factors
+ *
+ *   - Output D: Scaled with per-block FP8 scale factors
+ *     SFD size ≈ 32 per batch (computed from output layout)
+ */
+
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -29,32 +72,57 @@ auto make_iterator(T *ptr)
   return cute::recast_ptr<T>(ptr);
 }
 
+// ============================================================================
+// SECTION 1: KERNEL DEFINITION
+// ============================================================================
+// Type definitions and kernel configuration for CUTLASS GemvBlockScaled
+//
+// FP4 Block-Scaled Quantization:
+// - Data: float_e2m1_t (4-bit floating point)
+// - Scale factors: float_e4m3_t (8-bit floating point)
+// - Each block of 16 FP4 elements shares one FP8 scale factor
+// - Example: 512 FP32 values (2KB) → 256 FP4 values + 32 FP8 scales (1.3KB)
+
+// Kernel type definition - using CUTLASS GemvBlockScaled device kernel
+// This will be instantiated with proper type and layout parameters in main()
+template <typename ElementA, typename LayoutA, typename ElementB, typename ElementD,
+          typename ElementAccumulatorMainloop, typename EpilogueOp, int kElementsPerAccess>
+using GemvBlockScaledKernel = cutlass::gemm::device::GemvBlockScaled<
+    cutlass::gemm::kernel::GemvBlockScaled<ElementA, LayoutA, ElementB, ElementD,
+                                           ElementAccumulatorMainloop, EpilogueOp,
+                                           kElementsPerAccess>>;
+
+// ============================================================================
+// SECTION 2: WRAPPER FUNCTION
+// ============================================================================
+// launch_gemv_kernel(): Wrapper to launch CUTLASS FP4 GEMV kernel on GPU
+//
+// This function:
+// 1. Validates input tensor dimensions
+// 2. Calculates block scaling configuration (block counts, batch strides)
+// 3. Constructs CUTLASS kernel Arguments from PyTorch tensors
+// 4. Launches kernel with optional CUDA event-based profiling
+// 5. Reports GFLOPs and memory bandwidth
+
 template <typename Gemv_>
-struct TestbedPyTorchGemvFp4SFD
+struct GemvKernelConfig
 {
 public:
   using Gemv = Gemv_;
-
   using ElementA = typename Gemv::ElementA;
   using ElementSFA = typename Gemv::ElementSFA;
   using LayoutA = typename Gemv::LayoutA;
-
   using ElementB = typename Gemv::ElementB;
   using ElementSFB = typename Gemv::ElementSFB;
   using LayoutB = cutlass::layout::ColumnMajor;
-
   using ElementC = typename Gemv::ElementC;
   using LayoutC = cutlass::layout::ColumnMajor;
-
   using ElementD = typename Gemv::EpilogueOutputOp::ElementD;
   using LayoutD = typename Gemv::EpilogueOutputOp::LayoutOutput;
-
   using ElementSFD = typename Gemv::EpilogueOutputOp::ElementSFD;
   using LayoutSFD = typename Gemv::EpilogueOutputOp::LayoutSFD;
-
   using ElementAccumulator = typename Gemv::ElementAccumulator;
   using ElementCompute = typename Gemv::EpilogueOutputOp::ElementCompute;
-
   static constexpr int kVectorSize = Gemv::EpilogueOutputOp::kVectorSize;
 
   using Sm1xxBlockScaledOutputConfig =
@@ -62,77 +130,94 @@ public:
                                                     cutlass::is_same_v<LayoutSFD, cutlass::layout::RowMajor> ? cute::UMMA::Major::K : cute::UMMA::Major::MN>;
   using Blk_MN_Output = typename Sm1xxBlockScaledOutputConfig::Blk_MN;
   using Blk_SF_Output = typename Sm1xxBlockScaledOutputConfig::Blk_SF;
-
   using Sm100BlockScaledInputConfig = cutlass::detail::Sm1xxBlockScaledConfig<kVectorSize>;
   using Blk_MN_Input = typename Sm100BlockScaledInputConfig::Blk_MN;
   using Blk_SF_Input = typename Sm100BlockScaledInputConfig::Blk_SF;
   using SfAtom_Input = typename Sm100BlockScaledInputConfig::SfAtom;
+};
 
-public:
-  bool run_gemv(
-      torch::Tensor A,
-      torch::Tensor B,
-      torch::Tensor C,
-      torch::Tensor D,
-      torch::Tensor SFA,
-      torch::Tensor SFB,
-      torch::Tensor SFD,
-      int32_t batch_count,
-      ElementCompute alpha,
-      ElementCompute beta,
-      float epilogue_st,
-      bool is_profiling,
-      int kIterations)
+// launch_gemv_kernel: Execute batched FP4 GEMV on GPU with PyTorch tensors
+//
+// Arguments:
+//   - PyTorch CUDA tensors: A (batch*M x K), B (batch*K x 1), D (batch*M x 1)
+//   - Scale factors: SFA, SFB, SFD (pre-allocated tensors)
+//   - Batch count and epilogue parameters (alpha, beta, epilogue_st)
+//   - Profiling options and iteration count
+//
+// Example (M=256, K=512, Batch=2):
+//   Block calculation: m_blks = 16, k_blks = 32
+//   Scale factor sizes: SFA=16384, SFB=1024, SFD≈32
+//   Computation: D[m] = alpha * (A[m,:] * B[:,0]) + beta * C[m,0]
+
+template <typename Gemv>
+bool launch_gemv_kernel(
+    torch::Tensor A, torch::Tensor B, torch::Tensor C, torch::Tensor D,
+    torch::Tensor SFA, torch::Tensor SFB, torch::Tensor SFD,
+    int32_t batch_count, typename GemvKernelConfig<Gemv>::ElementCompute alpha,
+    typename GemvKernelConfig<Gemv>::ElementCompute beta, float epilogue_st,
+    bool is_profiling, int kIterations)
+{
+  using Config = GemvKernelConfig<Gemv>;
+
+  // Validate input tensor dimensions
+  if (A.dim() != 2 || B.dim() != 2 || D.dim() != 2)
   {
+    printf("Invalid tensor dimensions. Expected 2D tensors.\n");
+    return false;
+  }
 
-    if (A.dim() != 2 || B.dim() != 2 || D.dim() != 2)
-    {
-      printf("Invalid tensor dimensions. Expected 2D tensors.\n");
-      return false;
-    }
+  // Extract problem dimensions from PyTorch tensors
+  // A has shape (batch*M, K) - divide by batch_count to get per-batch M
+  const int32_t gemm_m = A.size(0) / batch_count;
+  const int32_t gemm_k = A.size(1);
+  const int32_t gemm_n = 1;
 
-    const int32_t gemm_m = A.size(0) / batch_count;
-    const int32_t gemm_k = A.size(1);
-    const int32_t gemm_n = 1;
+  // Calculate block scaling configuration
+  // Block scaling groups elements: each block of kVectorSize elements gets 1 FP8 scale factor
+  // Example: K=512, kVectorSize=16 → 32 blocks in K dimension
+  int k_blks_input = cutlass::ceil_div(gemm_k, cute::size<1>(cute::shape(typename Config::SfAtom_Input{})));
+  int m_blks_input = cutlass::ceil_div(gemm_m, cute::size(typename Config::Blk_MN_Input{}));
+  int n_blks_input = cutlass::ceil_div(gemm_n, cute::size(typename Config::Blk_MN_Input{}));
 
-    int k_blks_input = cutlass::ceil_div(gemm_k, cute::size<1>(cute::shape(SfAtom_Input{})));
-    int m_blks_input = cutlass::ceil_div(gemm_m, cute::size(Blk_MN_Input{}));
-    int n_blks_input = cutlass::ceil_div(gemm_n, cute::size(Blk_MN_Input{}));
+  // Calculate batch strides for scale factors (offset to next batch's scale factors)
+  int batch_stride_SFA = m_blks_input * cute::size(typename Config::Blk_MN_Input{}) * k_blks_input * cute::size(typename Config::Blk_SF_Input{});
+  int batch_stride_SFB = n_blks_input * cute::size(typename Config::Blk_MN_Input{}) * k_blks_input * cute::size(typename Config::Blk_SF_Input{});
 
-    int batch_stride_SFA = m_blks_input * cute::size(Blk_MN_Input{}) * k_blks_input * cute::size(Blk_SF_Input{});
-    int batch_stride_SFB = n_blks_input * cute::size(Blk_MN_Input{}) * k_blks_input * cute::size(Blk_SF_Input{});
+  // Configure output scale factor layout
+  using ProblemShapeType = cute::Shape<int, int, int, int>;
+  auto problem_shape_MNKL = ProblemShapeType{gemm_m, gemm_n, gemm_k, batch_count};
+  auto sfd_layout = Config::Sm1xxBlockScaledOutputConfig::tile_atom_to_shape_SFD(problem_shape_MNKL);
+  auto batch_stride_tuple = cute::stride<2>(sfd_layout);
+  int batch_stride_SFD = static_cast<int>(cute::get<1>(batch_stride_tuple));
 
-    using ProblemShapeType = cute::Shape<int, int, int, int>;
-    auto problem_shape_MNKL = ProblemShapeType{gemm_m, gemm_n, gemm_k, batch_count};
+  // Initialize CUTLASS kernel operation
+  Gemv gemv_op;
 
-    auto sfd_layout = Sm1xxBlockScaledOutputConfig::tile_atom_to_shape_SFD(problem_shape_MNKL);
-    auto batch_stride_tuple = cute::stride<2>(sfd_layout);
-    int batch_stride_SFD = static_cast<int>(cute::get<1>(batch_stride_tuple));
+  // Create TensorRef objects from PyTorch tensor pointers with layout info
+  typename Gemv::LayoutA layout_A;
+  cutlass::TensorRef<typename Config::ElementA, typename Config::LayoutA> ref_A(
+      (typename Config::ElementA *)A.data_ptr(), layout_A(cutlass::MatrixCoord{batch_count * gemm_m, gemm_k}));
+  cutlass::TensorRef<typename Config::ElementD, typename Config::LayoutD> ref_D(
+      (typename Config::ElementD *)D.data_ptr(), typename Config::LayoutD(cutlass::MatrixCoord{batch_count * gemm_m, 1}));
 
-    Gemv gemv_op;
-
-    // Create TensorRef objects from PyTorch tensor data pointers
-    typename Gemv::LayoutA layout_A;
-    cutlass::TensorRef<ElementA, LayoutA> ref_A((ElementA *)A.data_ptr(), layout_A(cutlass::MatrixCoord{batch_count * gemm_m, gemm_k}));
-    cutlass::TensorRef<ElementD, LayoutD> ref_D((ElementD *)D.data_ptr(), LayoutD(cutlass::MatrixCoord{batch_count * gemm_m, 1}));
-
-    typename Gemv::Arguments arguments{
+  // Construct kernel Arguments with all parameters
+  typename Gemv::Arguments arguments{
         cutlass::MatrixCoord{gemm_m, gemm_k},
         batch_count,
         typename Gemv::EpilogueOutputOp::Params{
             ref_D,
-            static_cast<ElementSFD*>(SFD.data_ptr()),
+            static_cast<typename Config::ElementSFD*>(SFD.data_ptr()),
             alpha,
             beta,
             epilogue_st,
             batch_stride_SFD,
             gemm_m},
         ref_A,
-        (ElementB *)B.data_ptr(),
-        (ElementC *)C.data_ptr(),
-        (ElementD *)D.data_ptr(),
-        (ElementSFA *)SFA.data_ptr(),
-        (ElementSFB *)SFB.data_ptr(),
+        (typename Config::ElementB *)B.data_ptr(),
+        (typename Config::ElementC *)C.data_ptr(),
+        (typename Config::ElementD *)D.data_ptr(),
+        (typename Config::ElementSFA *)SFA.data_ptr(),
+        (typename Config::ElementSFB *)SFB.data_ptr(),
         gemm_k,
         gemm_m * gemm_k,
         gemm_k,
@@ -235,12 +320,12 @@ public:
       }
 
       int64_t flops = int64_t(gemm_m) * gemm_n * gemm_k * batch_count * 2;
-      int64_t bytes = cutlass::bits_to_bytes<int64_t>(int64_t(cute::sizeof_bits_v<ElementA>) * int64_t(gemm_m) * int64_t(gemm_k) * batch_count) +
-                      cutlass::bits_to_bytes<int64_t>(int64_t(cute::sizeof_bits_v<ElementB>) * int64_t(gemm_k) * int64_t(gemm_n) * batch_count) +
-                      cutlass::bits_to_bytes<int64_t>(int64_t(cute::sizeof_bits_v<ElementD>) * int64_t(gemm_m) * int64_t(gemm_n) * batch_count) +
-                      cutlass::bits_to_bytes<int64_t>(int64_t(cute::sizeof_bits_v<ElementSFA>) * int64_t(gemm_m) * int64_t(gemm_k) * batch_count / int64_t(kVectorSize)) +
-                      cutlass::bits_to_bytes<int64_t>(int64_t(cute::sizeof_bits_v<ElementSFB>) * int64_t(gemm_k) * int64_t(gemm_n) * batch_count / int64_t(kVectorSize)) +
-                      cutlass::bits_to_bytes<int64_t>(int64_t(cute::sizeof_bits_v<ElementSFD>) * int64_t(gemm_m) * int64_t(gemm_n) * batch_count / int64_t(kVectorSize));
+      int64_t bytes = cutlass::bits_to_bytes<int64_t>(int64_t(cute::sizeof_bits_v<typename Config::ElementA>) * int64_t(gemm_m) * int64_t(gemm_k) * batch_count) +
+                      cutlass::bits_to_bytes<int64_t>(int64_t(cute::sizeof_bits_v<typename Config::ElementB>) * int64_t(gemm_k) * int64_t(gemm_n) * batch_count) +
+                      cutlass::bits_to_bytes<int64_t>(int64_t(cute::sizeof_bits_v<typename Config::ElementD>) * int64_t(gemm_m) * int64_t(gemm_n) * batch_count) +
+                      cutlass::bits_to_bytes<int64_t>(int64_t(cute::sizeof_bits_v<typename Config::ElementSFA>) * int64_t(gemm_m) * int64_t(gemm_k) * batch_count / int64_t(Config::kVectorSize)) +
+                      cutlass::bits_to_bytes<int64_t>(int64_t(cute::sizeof_bits_v<typename Config::ElementSFB>) * int64_t(gemm_k) * int64_t(gemm_n) * batch_count / int64_t(Config::kVectorSize)) +
+                      cutlass::bits_to_bytes<int64_t>(int64_t(cute::sizeof_bits_v<typename Config::ElementSFD>) * int64_t(gemm_m) * int64_t(gemm_n) * batch_count / int64_t(Config::kVectorSize));
 
       double gflops_per_second = double(flops) * kIterations / double(elapsed_ms / 1000.0f) / double(1.0e9);
       double gbytes_per_second = double(bytes) * kIterations / double(elapsed_ms / 1000.0f) / double(1 << 30);
@@ -260,9 +345,9 @@ public:
     }
 
     return true;
-  }
-};
+}
 
+// Options struct for command-line argument parsing
 struct Options
 {
   bool help = false;
@@ -316,9 +401,32 @@ struct Options
   }
 };
 
+// ============================================================================
+// SECTION 3: MAIN
+// ============================================================================
+// Driver function that:
+// 1. Parses command-line arguments
+// 2. Defines CUTLASS kernel types and configurations
+// 3. Allocates PyTorch CUDA tensors for data and scale factors
+// 4. Calculates block scaling configuration
+// 5. Launches the kernel wrapper
+// 6. Reports performance metrics (GFLOPs, memory bandwidth)
+//
+// Example (M=256, K=512, Batch=2):
+//   Kernel Types:
+//     - Data: FP4 (float_e2m1_t)
+//     - Scale factors: FP8 (float_e4m3_t)
+//     - Accumulation: FP16, Epilogue: FP32
+//   Tensors: A(512,512), B(1024,1), C(512,1), D(512,1)
+//   Scaling: SFA(16384), SFB(1024), SFD(≈32)
+//   Performance: ~9 GFLOPs, ~2.4 GiB/s bandwidth
+
 int main(int argc, char const **argv)
 {
 #if defined(CUTLASS_ARCH_MMA_SM100_SUPPORTED)
+  // ========================================================================
+  // STEP 1: Parse Command-Line Arguments
+  // ========================================================================
   Options options;
   options.parse(argc, argv);
 
@@ -328,45 +436,38 @@ int main(int argc, char const **argv)
     return 0;
   }
 
-  using ElementA = cutlass::float_e2m1_t;
-  using ElementSFA = cutlass::float_e4m3_t;
+  // Define CUTLASS kernel types and configurations
+  // Data precision: FP4 (4-bit) for efficiency, FP8 for scale factors
+  using ElementA = cutlass::float_e2m1_t;           // FP4 input matrix
+  using ElementSFA = cutlass::float_e4m3_t;         // FP8 scale factors
   using LayoutA = cutlass::layout::RowMajor;
-
-  using ElementB = cutlass::float_e2m1_t;
-  using ElementSFB = cutlass::float_e4m3_t;
-
-  using ElementC = cutlass::float_e2m1_t;
-
-  using ElementD = cutlass::float_e2m1_t;
+  using ElementB = cutlass::float_e2m1_t;           // FP4 input vector
+  using ElementSFB = cutlass::float_e4m3_t;         // FP8 scale factors
+  using ElementC = cutlass::float_e2m1_t;           // FP4 intermediate
+  using ElementD = cutlass::float_e2m1_t;           // FP4 output
   using LayoutD = cutlass::layout::ColumnMajor;
-
-  using ElementSFD = cutlass::float_e4m3_t;
+  using ElementSFD = cutlass::float_e4m3_t;         // FP8 output scale factors
   using LayoutSFD = cutlass::layout::ColumnMajor;
 
-  using ElementAccumulatorMainloop = cutlass::half_t;
-  using ElementAccumulator = float;
-  using ElementCompute = float;
+  // Internal precision for computation
+  using ElementAccumulatorMainloop = cutlass::half_t;  // FP16 in accumulation
+  using ElementAccumulator = float;                      // FP32 for accuracy
+  using ElementCompute = float;                          // FP32 for epilogue
 
   static constexpr int kVectorSize = 16;
   static constexpr int kElementsPerAccess = 128 / cutlass::sizeof_bits<ElementA>::value;
-
   using ThreadShape = cutlass::gemm::GemmShape<16, 8>;
-  static_assert(kVectorSize == ThreadShape::kM, "vector size and thread in row should be equal");
 
-  using EpilogueOp = typename cutlass::epilogue::threadblock::GemvEpilogueWithScalingFactor<kVectorSize,
-                                                                                            ThreadShape,
-                                                                                            ElementCompute,
-                                                                                            ElementAccumulator,
-                                                                                            ElementC,
-                                                                                            ElementD,
-                                                                                            ElementSFD,
-                                                                                            LayoutD,
-                                                                                            LayoutSFD>;
+  // Define epilogue with output scaling
+  using EpilogueOp = typename cutlass::epilogue::threadblock::GemvEpilogueWithScalingFactor<
+      kVectorSize, ThreadShape, ElementCompute, ElementAccumulator, ElementC, ElementD,
+      ElementSFD, LayoutD, LayoutSFD>;
 
-  using Gemv = cutlass::gemm::device::GemvBlockScaled<
-      cutlass::gemm::kernel::
-          GemvBlockScaled<ElementA, LayoutA, ElementB, ElementD, ElementAccumulatorMainloop, EpilogueOp, kElementsPerAccess>>;
+  // Assemble complete GEMV kernel
+  using Gemv = GemvBlockScaledKernel<ElementA, LayoutA, ElementB, ElementD,
+                                     ElementAccumulatorMainloop, EpilogueOp, kElementsPerAccess>;
 
+  // Extract problem dimensions from command-line options
   const int32_t batch_count = options.batch;
   const int32_t gemm_m = options.m;
   const int32_t gemm_k = options.k;
@@ -377,14 +478,15 @@ int main(int argc, char const **argv)
   printf("  B: (%d, %d) - batch*K x 1\n", batch_count * gemm_k, 1);
   printf("  D: (%d, %d) - batch*M x 1\n", batch_count * gemm_m, 1);
 
+  // Allocate PyTorch CUDA tensors for main data
   torch::Tensor A = torch::randn({batch_count * gemm_m, gemm_k}, torch::device(torch::kCUDA).dtype(torch::kFloat32));
   torch::Tensor B = torch::randn({batch_count * gemm_k, 1}, torch::device(torch::kCUDA).dtype(torch::kFloat32));
   torch::Tensor C = torch::randn({batch_count * gemm_m, 1}, torch::device(torch::kCUDA).dtype(torch::kFloat32));
   torch::Tensor D = torch::zeros({batch_count * gemm_m, 1}, torch::device(torch::kCUDA).dtype(torch::kFloat32));
 
+  // Calculate block scaling configuration for scale factor tensor sizes
   using ProblemShapeType = cute::Shape<int, int, int, int>;
   auto problem_shape_MNKL = ProblemShapeType{gemm_m, gemm_n, gemm_k, batch_count};
-
   using Sm100BlockScaledInputConfig = cutlass::detail::Sm1xxBlockScaledConfig<kVectorSize>;
   using Blk_MN_Input = typename Sm100BlockScaledInputConfig::Blk_MN;
   using Blk_SF_Input = typename Sm100BlockScaledInputConfig::Blk_SF;
@@ -401,14 +503,14 @@ int main(int argc, char const **argv)
   auto sfd_layout = Sm1xxBlockScaledOutputConfig::tile_atom_to_shape_SFD(problem_shape_MNKL);
   int sfd_size = (int)cute::size(cute::filter_zeros(sfd_layout));
 
+  // Allocate PyTorch CUDA tensors for scale factors
   torch::Tensor SFA = torch::randn({sfa_size}, torch::device(torch::kCUDA).dtype(torch::kFloat32));
   torch::Tensor SFB = torch::randn({sfb_size}, torch::device(torch::kCUDA).dtype(torch::kFloat32));
   torch::Tensor SFD = torch::randn({static_cast<int>(sfd_size)}, torch::device(torch::kCUDA).dtype(torch::kFloat32));
 
   printf("Tensors created successfully.\n\n");
 
-  TestbedPyTorchGemvFp4SFD<Gemv> testbed;
-
+  // Configure execution parameters
   ElementCompute alpha{options.alpha};
   ElementCompute beta{options.beta};
   const float epilogue_st = options.epilogue_st < 0.f ? static_cast<float>(rand()) / (static_cast<float>(RAND_MAX / 5)) : options.epilogue_st;
@@ -418,7 +520,9 @@ int main(int argc, char const **argv)
   printf("  alpha=%f, beta=%f, epilogue_st=%f\n", alpha, beta, epilogue_st);
   printf("  Profiling=%s, Iterations=%d\n\n", options.profiling ? "true" : "false", options.iterations);
 
-  bool pass = testbed.run_gemv(A, B, C, D, SFA, SFB, SFD, batch_count, alpha, beta, epilogue_st, options.profiling, options.iterations);
+  // Launch kernel wrapper
+  bool pass = launch_gemv_kernel<Gemv>(A, B, C, D, SFA, SFB, SFD, batch_count, alpha, beta,
+                                       epilogue_st, options.profiling, options.iterations);
 
   if (!pass)
   {
