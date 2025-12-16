@@ -164,3 +164,70 @@ void sgemm_cutlass_hopper_autotune_bf16(int config_id, const torch::Tensor &matr
                                          torch::Tensor &output_matrix);
 
 int get_num_cutlass_hopper_configs();
+
+// SGEMM with CUTLASS library - Blackwell architecture (SM100) with 2SM Warp Specialization
+// Input: BF16 or FP16, Output: BF16 or FP16
+// Uses CUTLASS 3.x Collective Builder API optimized for Blackwell GPUs with tcgen05 MMA
+// Requires Blackwell architecture (SM 10.0+) with TMA and 2SM support
+// Note: alpha=1.0, beta=0.0 are hard-coded
+
+// Default variants (backward compatibility) - uses basic 2SM with auto stage count
+void sgemm_cutlass_blackwell_bf16(const torch::Tensor &matrix_a, const torch::Tensor &matrix_b,
+                                   torch::Tensor &output_matrix);
+
+void sgemm_cutlass_blackwell_fp16(const torch::Tensor &matrix_a, const torch::Tensor &matrix_b,
+                                   torch::Tensor &output_matrix);
+
+// TMA Warp Specialized 2SM variants - BF16
+void sgemm_cutlass_blackwell_bf16_tma_warp_specialized_2sm_auto(
+    const torch::Tensor &matrix_a, const torch::Tensor &matrix_b,
+    torch::Tensor &output_matrix);
+
+void sgemm_cutlass_blackwell_bf16_tma_warp_specialized_2sm_constant(
+    const torch::Tensor &matrix_a, const torch::Tensor &matrix_b,
+    torch::Tensor &output_matrix);
+
+// TMA Warp Specialized 2SM Persistent variants - BF16
+void sgemm_cutlass_blackwell_bf16_tma_warp_specialized_2sm_persistent_auto(
+    const torch::Tensor &matrix_a, const torch::Tensor &matrix_b,
+    torch::Tensor &output_matrix);
+
+void sgemm_cutlass_blackwell_bf16_tma_warp_specialized_2sm_persistent_constant(
+    const torch::Tensor &matrix_a, const torch::Tensor &matrix_b,
+    torch::Tensor &output_matrix);
+
+// TMA Warp Specialized 2SM Stream-K variants - BF16
+void sgemm_cutlass_blackwell_bf16_tma_warp_specialized_2sm_streamk_auto(
+    const torch::Tensor &matrix_a, const torch::Tensor &matrix_b,
+    torch::Tensor &output_matrix);
+
+void sgemm_cutlass_blackwell_bf16_tma_warp_specialized_2sm_streamk_constant(
+    const torch::Tensor &matrix_a, const torch::Tensor &matrix_b,
+    torch::Tensor &output_matrix);
+
+// TMA Warp Specialized 2SM variants - FP16
+void sgemm_cutlass_blackwell_fp16_tma_warp_specialized_2sm_auto(
+    const torch::Tensor &matrix_a, const torch::Tensor &matrix_b,
+    torch::Tensor &output_matrix);
+
+void sgemm_cutlass_blackwell_fp16_tma_warp_specialized_2sm_constant(
+    const torch::Tensor &matrix_a, const torch::Tensor &matrix_b,
+    torch::Tensor &output_matrix);
+
+// TMA Warp Specialized 2SM Persistent variants - FP16
+void sgemm_cutlass_blackwell_fp16_tma_warp_specialized_2sm_persistent_auto(
+    const torch::Tensor &matrix_a, const torch::Tensor &matrix_b,
+    torch::Tensor &output_matrix);
+
+void sgemm_cutlass_blackwell_fp16_tma_warp_specialized_2sm_persistent_constant(
+    const torch::Tensor &matrix_a, const torch::Tensor &matrix_b,
+    torch::Tensor &output_matrix);
+
+// TMA Warp Specialized 2SM Stream-K variants - FP16
+void sgemm_cutlass_blackwell_fp16_tma_warp_specialized_2sm_streamk_auto(
+    const torch::Tensor &matrix_a, const torch::Tensor &matrix_b,
+    torch::Tensor &output_matrix);
+
+void sgemm_cutlass_blackwell_fp16_tma_warp_specialized_2sm_streamk_constant(
+    const torch::Tensor &matrix_a, const torch::Tensor &matrix_b,
+    torch::Tensor &output_matrix);

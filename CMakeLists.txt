@@ -298,8 +298,17 @@ if(CUTLASS_AVAILABLE)
         message(STATUS "GPU compute capability SM${GPU_COMPUTE_CAPABILITY} < SM100: Skipping Blackwell kernels")
     endif()
 
-    # Blackwell Benchmark (requires SM100+ and CUTLASS 3.x)
+    # CUTLASS Blackwell kernel (requires SM100+ and CUTLASS 3.x)
     if(BUILD_BLACKWELL_KERNELS)
+        message(STATUS "Building CUTLASS Blackwell kernel for SM100")
+        add_executable(test_gemm_cutlass_blackwell
+            ${CMAKE_SOURCE_DIR}/cuda/tests/test_gemm_cutlass_blackwell.cpp
+            ${CMAKE_SOURCE_DIR}/cuda/17_kernel_cutlass_blackwell.cu)
+        target_link_libraries(test_gemm_cutlass_blackwell "${TORCH_LIBRARIES}")
+        # Blackwell requires sm_100
+        set_property(TARGET test_gemm_cutlass_blackwell PROPERTY CUDA_ARCHITECTURES 100)
+
+        # Blackwell Benchmark (requires SM100+ and CUTLASS 3.x)
         message(STATUS "Building Blackwell benchmark for SM100")
         add_executable(benchmark_blackwell
             ${CMAKE_SOURCE_DIR}/cuda/scripts/benchmark_blackwell.cu)
@@ -307,7 +316,7 @@ if(CUTLASS_AVAILABLE)
         # Blackwell requires sm_100
         set_property(TARGET benchmark_blackwell PROPERTY CUDA_ARCHITECTURES 100)
     else()
-        message(STATUS "Skipping Blackwell benchmark (requires SM100+)")
+        message(STATUS "Skipping CUTLASS Blackwell kernel (requires SM100+)")
     endif()
 endif()
 
@@ -329,6 +338,11 @@ add_test(NAME test_gemm_tensorcore_async COMMAND test_gemm_tensorcore_async)
 # Only add Hopper test if it was built
 if(BUILD_HOPPER_KERNELS)
     add_test(NAME test_gemm_cutlass_hopper COMMAND test_gemm_cutlass_hopper)
+endif()
+
+# Only add Blackwell test if it was built
+if(BUILD_BLACKWELL_KERNELS)
+    add_test(NAME test_gemm_cutlass_blackwell COMMAND test_gemm_cutlass_blackwell)
 endif()
 
 
