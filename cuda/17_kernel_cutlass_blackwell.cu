@@ -15,15 +15,15 @@
 
 using namespace cute;
 
-// Blackwell (SM100) Warp-Specialized GEMM using CUTLASS 3.x Collective Builder API
-// Demonstrates tcgen05 MMA with 2SM warp specialization
+// Blackwell Warp-Specialized GEMM using CUTLASS 3.x Collective Builder API
+// Supports both Sm100 (datacenter) and Sm120 (GeForce) architectures
 
 // Enum to select different Blackwell kernel schedules
 enum class BlackwellKernelType
 {
-    TmaWarpSpecialized2Sm,              // TMA with 2SM warp specialization (tcgen05 cta_group=2)
-    TmaWarpSpecialized2SmPersistent,    // TMA with 2SM persistent scheduling
-    TmaWarpSpecialized2SmStreamK        // TMA with 2SM Stream K scheduling
+    TmaWarpSpecializedCooperative,       // TMA with cooperative warp specialization
+    TmaWarpSpecializedPersistent,        // TMA with persistent scheduling
+    TmaWarpSpecializedStreamK            // TMA with Stream K scheduling
 };
 
 // Enum to select stage count strategy
@@ -37,34 +37,27 @@ enum class StageCountType
 template <BlackwellKernelType KernelType>
 constexpr auto get_kernel_schedule()
 {
-    if constexpr (KernelType == BlackwellKernelType::TmaWarpSpecialized2Sm)
-    {
-        return cutlass::gemm::KernelTmaWarpSpecialized2SmSm100{};
-    }
-    else
-    {
-        // For persistent and stream-k, we use the same 2SM schedule
-        return cutlass::gemm::KernelTmaWarpSpecialized2SmSm100{};
-    }
+    // Use auto kernel schedule for all variants
+    return cutlass::gemm::collective::KernelScheduleAuto{};
 }
 
 // Helper function to get epilogue schedule type
 template <BlackwellKernelType KernelType>
 constexpr auto get_epilogue_schedule()
 {
-    // Blackwell uses 2SM epilogue schedule
-    return cutlass::epilogue::TmaWarpSpecialized2Sm{};
+    // Use auto epilogue schedule for Blackwell
+    return cutlass::epilogue::collective::EpilogueScheduleAuto{};
 }
 
 // Helper function to get tile scheduler type
 template <BlackwellKernelType KernelType>
 constexpr auto get_tile_scheduler()
 {
-    if constexpr (KernelType == BlackwellKernelType::TmaWarpSpecialized2Sm)
+    if constexpr (KernelType == BlackwellKernelType::TmaWarpSpecializedCooperative)
     {
         return; // void - no tile scheduler
     }
-    else if constexpr (KernelType == BlackwellKernelType::TmaWarpSpecialized2SmStreamK)
+    else if constexpr (KernelType == BlackwellKernelType::TmaWarpSpecializedStreamK)
     {
         return cutlass::gemm::StreamKScheduler{};
     }
@@ -112,17 +105,16 @@ struct CutlassBlackwellGemmConfig
     static constexpr int AlignmentC = 128 / cutlass::sizeof_bits<ElementC>::value;
     static constexpr int AlignmentD = 128 / cutlass::sizeof_bits<ElementD>::value;
 
-    // Tile and cluster configuration for Blackwell (SM100)
-    // Shape of the tile computed by tcgen05 MMA, spans across 2 SMs when Cluster Shape M % 2 == 0
-    static constexpr int TileM = 256;
+    // Tile and cluster configuration for Blackwell
+    // Shape of the tile computed by tcgen05 MMA
+    static constexpr int TileM = 128;
     static constexpr int TileN = 128;
     static constexpr int TileK = 64;
 
     using TileShape = Shape<cute::Int<TileM>, cute::Int<TileN>, cute::Int<TileK>>; // CTA tile (M, N, K)
 
-    // Dynamic cluster shape for flexibility - set to <int,int,_1> for runtime configuration
-    // For 2SM operation, cluster M dimension should be a multiple of 2
-    using ClusterShape = Shape<_4, _4, _1>; // Default: 4x4x1 cluster
+    // Cluster shape for Blackwell
+    using ClusterShape = Shape<_1, _1, _1>;
 
     // Select kernel schedule and epilogue schedule
     using KernelSchedule = decltype(get_kernel_schedule<KernelType>());
@@ -185,42 +177,34 @@ struct CutlassBlackwellGemmConfig
 };
 
 // Type aliases for different kernel configurations
-// TMA Warp Specialized 2SM variants
+// TMA Warp Specialized Cooperative variants
 template <typename ElementType>
-using TmaWarpSpecialized2SmAutoConfig = CutlassBlackwellGemmConfig<ElementType, BlackwellKernelType::TmaWarpSpecialized2Sm, StageCountType::Auto>;
+using TmaWarpSpecializedCooperativeAutoConfig = CutlassBlackwellGemmConfig<ElementType, BlackwellKernelType::TmaWarpSpecializedCooperative, StageCountType::Auto>;
 
 template <typename ElementType>
-using TmaWarpSpecialized2SmConstantConfig = CutlassBlackwellGemmConfig<ElementType, BlackwellKernelType::TmaWarpSpecialized2Sm, StageCountType::Constant>;
+using TmaWarpSpecializedCooperativeConstantConfig = CutlassBlackwellGemmConfig<ElementType, BlackwellKernelType::TmaWarpSpecializedCooperative, StageCountType::Constant>;
 
-// TMA Warp Specialized 2SM Persistent variants
+// TMA Warp Specialized Persistent variants
 template <typename ElementType>
-using TmaWarpSpecialized2SmPersistentAutoConfig = CutlassBlackwellGemmConfig<ElementType, BlackwellKernelType::TmaWarpSpecialized2SmPersistent, StageCountType::Auto>;
-
-template <typename ElementType>
-using TmaWarpSpecialized2SmPersistentConstantConfig = CutlassBlackwellGemmConfig<ElementType, BlackwellKernelType::TmaWarpSpecialized2SmPersistent, StageCountType::Constant>;
-
-// TMA Warp Specialized 2SM Stream-K variants
-template <typename ElementType>
-using TmaWarpSpecialized2SmStreamKAutoConfig = CutlassBlackwellGemmConfig<ElementType, BlackwellKernelType::TmaWarpSpecialized2SmStreamK, StageCountType::Auto>;
+using TmaWarpSpecializedPersistentAutoConfig = CutlassBlackwellGemmConfig<ElementType, BlackwellKernelType::TmaWarpSpecializedPersistent, StageCountType::Auto>;
 
 template <typename ElementType>
-using TmaWarpSpecialized2SmStreamKConstantConfig = CutlassBlackwellGemmConfig<ElementType, BlackwellKernelType::TmaWarpSpecialized2SmStreamK, StageCountType::Constant>;
+using TmaWarpSpecializedPersistentConstantConfig = CutlassBlackwellGemmConfig<ElementType, BlackwellKernelType::TmaWarpSpecializedPersistent, StageCountType::Constant>;
+
+// TMA Warp Specialized Stream-K variants
+template <typename ElementType>
+using TmaWarpSpecializedStreamKAutoConfig = CutlassBlackwellGemmConfig<ElementType, BlackwellKernelType::TmaWarpSpecializedStreamK, StageCountType::Auto>;
+
+template <typename ElementType>
+using TmaWarpSpecializedStreamKConstantConfig = CutlassBlackwellGemmConfig<ElementType, BlackwellKernelType::TmaWarpSpecializedStreamK, StageCountType::Constant>;
 
 // BF16 type aliases for all 6 variants
-using BF16BlackwellTmaWarpSpecialized2SmAuto = TmaWarpSpecialized2SmAutoConfig<bfloat16_t>;
-using BF16BlackwellTmaWarpSpecialized2SmConstant = TmaWarpSpecialized2SmConstantConfig<bfloat16_t>;
-using BF16BlackwellTmaWarpSpecialized2SmPersistentAuto = TmaWarpSpecialized2SmPersistentAutoConfig<bfloat16_t>;
-using BF16BlackwellTmaWarpSpecialized2SmPersistentConstant = TmaWarpSpecialized2SmPersistentConstantConfig<bfloat16_t>;
-using BF16BlackwellTmaWarpSpecialized2SmStreamKAuto = TmaWarpSpecialized2SmStreamKAutoConfig<bfloat16_t>;
-using BF16BlackwellTmaWarpSpecialized2SmStreamKConstant = TmaWarpSpecialized2SmStreamKConstantConfig<bfloat16_t>;
-
-// FP16 type aliases for all 6 variants
-using FP16BlackwellTmaWarpSpecialized2SmAuto = TmaWarpSpecialized2SmAutoConfig<half_t>;
-using FP16BlackwellTmaWarpSpecialized2SmConstant = TmaWarpSpecialized2SmConstantConfig<half_t>;
-using FP16BlackwellTmaWarpSpecialized2SmPersistentAuto = TmaWarpSpecialized2SmPersistentAutoConfig<half_t>;
-using FP16BlackwellTmaWarpSpecialized2SmPersistentConstant = TmaWarpSpecialized2SmPersistentConstantConfig<half_t>;
-using FP16BlackwellTmaWarpSpecialized2SmStreamKAuto = TmaWarpSpecialized2SmStreamKAutoConfig<half_t>;
-using FP16BlackwellTmaWarpSpecialized2SmStreamKConstant = TmaWarpSpecialized2SmStreamKConstantConfig<half_t>;
+using BF16BlackwellTmaWarpSpecializedCooperativeAuto = TmaWarpSpecializedCooperativeAutoConfig<bfloat16_t>;
+using BF16BlackwellTmaWarpSpecializedCooperativeConstant = TmaWarpSpecializedCooperativeConstantConfig<bfloat16_t>;
+using BF16BlackwellTmaWarpSpecializedPersistentAuto = TmaWarpSpecializedPersistentAutoConfig<bfloat16_t>;
+using BF16BlackwellTmaWarpSpecializedPersistentConstant = TmaWarpSpecializedPersistentConstantConfig<bfloat16_t>;
+using BF16BlackwellTmaWarpSpecializedStreamKAuto = TmaWarpSpecializedStreamKAutoConfig<bfloat16_t>;
+using BF16BlackwellTmaWarpSpecializedStreamKConstant = TmaWarpSpecializedStreamKConstantConfig<bfloat16_t>;
 
 // Helper to check if scheduler is Stream-K
 template <typename Scheduler>
@@ -262,8 +246,8 @@ cudaError_t cutlass_blackwell_gemm_launch(
     hw_info.sm_count = cutlass::KernelHardwareInfo::query_device_multiprocessor_count(hw_info.device_id);
 
     // Set cluster shape (for 2SM operation, M dimension should be multiple of 2)
-    hw_info.cluster_shape = dim3(4, 4, 1);
-    hw_info.cluster_shape_fallback = dim3(2, 1, 1);
+    // hw_info.cluster_shape = dim3(4, 4, 1);
+    // hw_info.cluster_shape_fallback = dim3(2, 1, 1);
 
     // Hard-coded alpha = 1.0, beta = 0.0
     float alpha = 1.0f;
@@ -287,8 +271,7 @@ cudaError_t cutlass_blackwell_gemm_launch(
             // Scheduler arguments: splits, raster_order, swizzle, decomposition_mode, reduction_mode
             typename Config::GemmKernel::TileScheduler::Arguments scheduler_args{};
             scheduler_args.splits = splits;
-            scheduler_args.raster_order = static_cast<int>(cutlass::gemm::kernel::detail::PersistentTileSchedulerSm90::RasterOrder::Heuristic);
-            scheduler_args.max_swizzle_size = cutlass::gemm::kernel::detail::PersistentTileSchedulerSm90::RasterOrderOptions::Heuristic;
+            scheduler_args.max_swizzle_size = 1;
             scheduler_args.decomposition_mode = decomp;
             scheduler_args.reduction_mode = reduction;
 
@@ -346,6 +329,9 @@ cudaError_t cutlass_blackwell_gemm_launch(
     status = gemm_op.initialize(args, workspace, stream);
     if (status != cutlass::Status::kSuccess)
     {
+        std::cerr << "CUTLASS Blackwell GEMM initialize failed: "
+                  << cutlass::cutlassGetStatusString(status)
+                  << " at line " << __LINE__ << std::endl;
         if (workspace)
             cudaFree(workspace);
         return cudaErrorUnknown;
@@ -359,7 +345,12 @@ cudaError_t cutlass_blackwell_gemm_launch(
         cudaFree(workspace);
 
     if (status != cutlass::Status::kSuccess)
+    {
+        std::cerr << "CUTLASS Blackwell GEMM run failed: "
+                  << cutlass::cutlassGetStatusString(status)
+                  << " at line " << __LINE__ << std::endl;
         return cudaErrorUnknown;
+    }
 
     return cudaSuccess;
 }
@@ -427,149 +418,84 @@ void cutlass_blackwell_gemm_pytorch_wrapper(
                     cudaGetErrorString(sync_err));
     }
 
+    std::cout << "CUTLASS Blackwell GEMM (" << dtype_name << ") launched: "
+              << "M=" << M << ", N=" << N << ", K=" << K << "err: "<< err << std::endl;
+
     TORCH_CHECK(err == cudaSuccess,
                 "CUTLASS Blackwell GEMM (", dtype_name, ") launch failed: ", cudaGetErrorString(err));
 }
 
-// BF16 launchers - TMA Warp Specialized 2SM variants
-void sgemm_cutlass_blackwell_bf16_tma_warp_specialized_2sm_auto(
-    const torch::Tensor &matrix_a,
-    const torch::Tensor &matrix_b,
-    torch::Tensor &output_matrix)
-{
-    cutlass_blackwell_gemm_pytorch_wrapper<BF16BlackwellTmaWarpSpecialized2SmAuto, at::BFloat16>(
-        matrix_a, matrix_b, output_matrix,
-        "bfloat16", at::kBFloat16);
-}
-
-void sgemm_cutlass_blackwell_bf16_tma_warp_specialized_2sm_constant(
-    const torch::Tensor &matrix_a,
-    const torch::Tensor &matrix_b,
-    torch::Tensor &output_matrix)
-{
-    cutlass_blackwell_gemm_pytorch_wrapper<BF16BlackwellTmaWarpSpecialized2SmConstant, at::BFloat16>(
-        matrix_a, matrix_b, output_matrix,
-        "bfloat16", at::kBFloat16);
-}
-
-// BF16 launchers - TMA Warp Specialized 2SM Persistent variants
-void sgemm_cutlass_blackwell_bf16_tma_warp_specialized_2sm_persistent_auto(
-    const torch::Tensor &matrix_a,
-    const torch::Tensor &matrix_b,
-    torch::Tensor &output_matrix)
-{
-    cutlass_blackwell_gemm_pytorch_wrapper<BF16BlackwellTmaWarpSpecialized2SmPersistentAuto, at::BFloat16>(
-        matrix_a, matrix_b, output_matrix,
-        "bfloat16", at::kBFloat16);
-}
-
-void sgemm_cutlass_blackwell_bf16_tma_warp_specialized_2sm_persistent_constant(
-    const torch::Tensor &matrix_a,
-    const torch::Tensor &matrix_b,
-    torch::Tensor &output_matrix)
-{
-    cutlass_blackwell_gemm_pytorch_wrapper<BF16BlackwellTmaWarpSpecialized2SmPersistentConstant, at::BFloat16>(
-        matrix_a, matrix_b, output_matrix,
-        "bfloat16", at::kBFloat16);
-}
-
-// BF16 launchers - TMA Warp Specialized 2SM Stream-K variants
-void sgemm_cutlass_blackwell_bf16_tma_warp_specialized_2sm_streamk_auto(
-    const torch::Tensor &matrix_a,
-    const torch::Tensor &matrix_b,
-    torch::Tensor &output_matrix)
-{
-    cutlass_blackwell_gemm_pytorch_wrapper<BF16BlackwellTmaWarpSpecialized2SmStreamKAuto, at::BFloat16>(
-        matrix_a, matrix_b, output_matrix,
-        "bfloat16", at::kBFloat16);
-}
-
-void sgemm_cutlass_blackwell_bf16_tma_warp_specialized_2sm_streamk_constant(
-    const torch::Tensor &matrix_a,
-    const torch::Tensor &matrix_b,
-    torch::Tensor &output_matrix)
-{
-    cutlass_blackwell_gemm_pytorch_wrapper<BF16BlackwellTmaWarpSpecialized2SmStreamKConstant, at::BFloat16>(
-        matrix_a, matrix_b, output_matrix,
-        "bfloat16", at::kBFloat16);
-}
-
-// FP16 launchers - TMA Warp Specialized 2SM variants
-void sgemm_cutlass_blackwell_fp16_tma_warp_specialized_2sm_auto(
-    const torch::Tensor &matrix_a,
-    const torch::Tensor &matrix_b,
-    torch::Tensor &output_matrix)
-{
-    cutlass_blackwell_gemm_pytorch_wrapper<FP16BlackwellTmaWarpSpecialized2SmAuto, at::Half>(
-        matrix_a, matrix_b, output_matrix,
-        "float16", at::kHalf);
-}
-
-void sgemm_cutlass_blackwell_fp16_tma_warp_specialized_2sm_constant(
-    const torch::Tensor &matrix_a,
-    const torch::Tensor &matrix_b,
-    torch::Tensor &output_matrix)
-{
-    cutlass_blackwell_gemm_pytorch_wrapper<FP16BlackwellTmaWarpSpecialized2SmConstant, at::Half>(
-        matrix_a, matrix_b, output_matrix,
-        "float16", at::kHalf);
-}
-
-// FP16 launchers - TMA Warp Specialized 2SM Persistent variants
-void sgemm_cutlass_blackwell_fp16_tma_warp_specialized_2sm_persistent_auto(
-    const torch::Tensor &matrix_a,
-    const torch::Tensor &matrix_b,
-    torch::Tensor &output_matrix)
-{
-    cutlass_blackwell_gemm_pytorch_wrapper<FP16BlackwellTmaWarpSpecialized2SmPersistentAuto, at::Half>(
-        matrix_a, matrix_b, output_matrix,
-        "float16", at::kHalf);
-}
-
-void sgemm_cutlass_blackwell_fp16_tma_warp_specialized_2sm_persistent_constant(
-    const torch::Tensor &matrix_a,
-    const torch::Tensor &matrix_b,
-    torch::Tensor &output_matrix)
-{
-    cutlass_blackwell_gemm_pytorch_wrapper<FP16BlackwellTmaWarpSpecialized2SmPersistentConstant, at::Half>(
-        matrix_a, matrix_b, output_matrix,
-        "float16", at::kHalf);
-}
-
-// FP16 launchers - TMA Warp Specialized 2SM Stream-K variants
-void sgemm_cutlass_blackwell_fp16_tma_warp_specialized_2sm_streamk_auto(
-    const torch::Tensor &matrix_a,
-    const torch::Tensor &matrix_b,
-    torch::Tensor &output_matrix)
-{
-    cutlass_blackwell_gemm_pytorch_wrapper<FP16BlackwellTmaWarpSpecialized2SmStreamKAuto, at::Half>(
-        matrix_a, matrix_b, output_matrix,
-        "float16", at::kHalf);
-}
-
-void sgemm_cutlass_blackwell_fp16_tma_warp_specialized_2sm_streamk_constant(
-    const torch::Tensor &matrix_a,
-    const torch::Tensor &matrix_b,
-    torch::Tensor &output_matrix)
-{
-    cutlass_blackwell_gemm_pytorch_wrapper<FP16BlackwellTmaWarpSpecialized2SmStreamKConstant, at::Half>(
-        matrix_a, matrix_b, output_matrix,
-        "float16", at::kHalf);
-}
-
-// Backward compatibility: default to basic 2SM variant with auto stage count
+// BF16 launchers - Default variant (uses Cooperative Auto as the default)
 void sgemm_cutlass_blackwell_bf16(
     const torch::Tensor &matrix_a,
     const torch::Tensor &matrix_b,
     torch::Tensor &output_matrix)
 {
-    sgemm_cutlass_blackwell_bf16_tma_warp_specialized_2sm_auto(matrix_a, matrix_b, output_matrix);
+    cutlass_blackwell_gemm_pytorch_wrapper<BF16BlackwellTmaWarpSpecializedCooperativeAuto, at::BFloat16>(
+        matrix_a, matrix_b, output_matrix,
+        "bfloat16", at::kBFloat16);
 }
 
-void sgemm_cutlass_blackwell_fp16(
+// BF16 launchers - TMA Warp Specialized Cooperative variants
+void sgemm_cutlass_blackwell_bf16_tma_warp_specialized_cooperative_auto(
     const torch::Tensor &matrix_a,
     const torch::Tensor &matrix_b,
     torch::Tensor &output_matrix)
 {
-    sgemm_cutlass_blackwell_fp16_tma_warp_specialized_2sm_auto(matrix_a, matrix_b, output_matrix);
+    cutlass_blackwell_gemm_pytorch_wrapper<BF16BlackwellTmaWarpSpecializedCooperativeAuto, at::BFloat16>(
+        matrix_a, matrix_b, output_matrix,
+        "bfloat16", at::kBFloat16);
 }
+
+void sgemm_cutlass_blackwell_bf16_tma_warp_specialized_cooperative_constant(
+    const torch::Tensor &matrix_a,
+    const torch::Tensor &matrix_b,
+    torch::Tensor &output_matrix)
+{
+    cutlass_blackwell_gemm_pytorch_wrapper<BF16BlackwellTmaWarpSpecializedCooperativeConstant, at::BFloat16>(
+        matrix_a, matrix_b, output_matrix,
+        "bfloat16", at::kBFloat16);
+}
+
+// BF16 launchers - TMA Warp Specialized Persistent variants
+void sgemm_cutlass_blackwell_bf16_tma_warp_specialized_persistent_auto(
+    const torch::Tensor &matrix_a,
+    const torch::Tensor &matrix_b,
+    torch::Tensor &output_matrix)
+{
+    cutlass_blackwell_gemm_pytorch_wrapper<BF16BlackwellTmaWarpSpecializedPersistentAuto, at::BFloat16>(
+        matrix_a, matrix_b, output_matrix,
+        "bfloat16", at::kBFloat16);
+}
+
+void sgemm_cutlass_blackwell_bf16_tma_warp_specialized_persistent_constant(
+    const torch::Tensor &matrix_a,
+    const torch::Tensor &matrix_b,
+    torch::Tensor &output_matrix)
+{
+    cutlass_blackwell_gemm_pytorch_wrapper<BF16BlackwellTmaWarpSpecializedPersistentConstant, at::BFloat16>(
+        matrix_a, matrix_b, output_matrix,
+        "bfloat16", at::kBFloat16);
+}
+
+// BF16 launchers - TMA Warp Specialized Stream-K variants
+void sgemm_cutlass_blackwell_bf16_tma_warp_specialized_streamk_auto(
+    const torch::Tensor &matrix_a,
+    const torch::Tensor &matrix_b,
+    torch::Tensor &output_matrix)
+{
+    cutlass_blackwell_gemm_pytorch_wrapper<BF16BlackwellTmaWarpSpecializedStreamKAuto, at::BFloat16>(
+        matrix_a, matrix_b, output_matrix,
+        "bfloat16", at::kBFloat16);
+}
+
+void sgemm_cutlass_blackwell_bf16_tma_warp_specialized_streamk_constant(
+    const torch::Tensor &matrix_a,
+    const torch::Tensor &matrix_b,
+    torch::Tensor &output_matrix)
+{
+    cutlass_blackwell_gemm_pytorch_wrapper<BF16BlackwellTmaWarpSpecializedStreamKConstant, at::BFloat16>(
+        matrix_a, matrix_b, output_matrix,
+        "bfloat16", at::kBFloat16);
+}
+

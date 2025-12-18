@@ -328,7 +328,6 @@ typename Gemm::Arguments args_from_options(const Options &options)
   arguments.hw_info.cluster_shape_fallback = dim3(options.fallback_cluster_m, options.fallback_cluster_n, 1);
 
   arguments.scheduler.splits = options.splits;
-  arguments.scheduler.raster_order = static_cast<int>(options.raster);
   arguments.scheduler.decomposition_mode = options.decomp;
   arguments.scheduler.reduction_mode = options.reduction;
   arguments.scheduler.max_swizzle_size = options.swizzle;

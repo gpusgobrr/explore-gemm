@@ -421,7 +421,9 @@ def main(kernel: str, iterations: int, size: int, dtype: str):
     # - PyTorch and warptiling: output matches input dtype
     # - Tensor Core and CUTLASS kernels: output FP32 (they accumulate in FP32)
     # - FP32-only kernels: output FP32
-    if kernel in ["pytorch", "warptiling"]:
+    if "hopper" in kernel:
+        output_dtype = torch.bfloat16
+    elif kernel in ["pytorch", "warptiling"]:
         output_dtype = torch_dtype
     elif kernel in [
         "tensorcore_naive_fp16",

@@ -137,86 +137,6 @@ TEST_CASE("SGEMM CUTLASS Blackwell BF16 - Basic functionality", "[cutlass_blackw
     }
 }
 
-// FP16 Tests
-TEST_CASE("SGEMM CUTLASS Blackwell FP16 - Basic functionality", "[cutlass_blackwell][fp16]")
-{
-    int device;
-    cudaGetDevice(&device);
-    cudaDeviceProp prop;
-    cudaGetDeviceProperties(&prop, device);
-
-    if (prop.major < 10) {
-        WARN("Skipping FP16 test on SM " << prop.major << "." << prop.minor);
-        return;
-    }
-
-    torch::manual_seed(42);
-
-    SECTION("Small matrix - 256x256")
-    {
-        int M = 256, N = 256, K = 256;
-        auto options_fp16 = torch::TensorOptions().dtype(torch::kHalf).device(torch::kCUDA);
-
-        auto A = torch::rand({M, K}, options_fp16);
-        auto B = torch::rand({K, N}, options_fp16);
-        auto C = torch::zeros({M, N}, options_fp16);
-
-        sgemm_cutlass_blackwell_fp16(A, B, C);
-
-        auto ref = torch::matmul(A, B);
-
-        REQUIRE(tensors_are_close(C, ref, TOLERANCE_FP16));
-    }
-
-    SECTION("Medium matrix - 512x512")
-    {
-        int M = 512, N = 512, K = 512;
-        auto options_fp16 = torch::TensorOptions().dtype(torch::kHalf).device(torch::kCUDA);
-
-        auto A = torch::rand({M, K}, options_fp16);
-        auto B = torch::rand({K, N}, options_fp16);
-        auto C = torch::zeros({M, N}, options_fp16);
-
-        sgemm_cutlass_blackwell_fp16(A, B, C);
-
-        auto ref = torch::matmul(A, B);
-
-        REQUIRE(tensors_are_close(C, ref, TOLERANCE_FP16));
-    }
-
-    SECTION("Large matrix - 1024x1024")
-    {
-        int M = 1024, N = 1024, K = 1024;
-        auto options_fp16 = torch::TensorOptions().dtype(torch::kHalf).device(torch::kCUDA);
-
-        auto A = torch::rand({M, K}, options_fp16);
-        auto B = torch::rand({K, N}, options_fp16);
-        auto C = torch::zeros({M, N}, options_fp16);
-
-        sgemm_cutlass_blackwell_fp16(A, B, C);
-
-        auto ref = torch::matmul(A, B);
-
-        REQUIRE(tensors_are_close(C, ref, TOLERANCE_FP16));
-    }
-
-    SECTION("Non-square matrix - 512x1024x768")
-    {
-        int M = 512, N = 1024, K = 768;
-        auto options_fp16 = torch::TensorOptions().dtype(torch::kHalf).device(torch::kCUDA);
-
-        auto A = torch::rand({M, K}, options_fp16);
-        auto B = torch::rand({K, N}, options_fp16);
-        auto C = torch::zeros({M, N}, options_fp16);
-
-        sgemm_cutlass_blackwell_fp16(A, B, C);
-
-        auto ref = torch::matmul(A, B);
-
-        REQUIRE(tensors_are_close(C, ref, TOLERANCE_FP16));
-    }
-}
-
 // BF16 Kernel Variant Tests
 TEST_CASE("SGEMM CUTLASS Blackwell BF16 - Kernel variants", "[cutlass_blackwell][bf16][variants]")
 {
@@ -238,110 +158,46 @@ TEST_CASE("SGEMM CUTLASS Blackwell BF16 - Kernel variants", "[cutlass_blackwell]
     auto B = torch::rand({K, N}, options_bf16);
     auto ref = torch::matmul(A, B);
 
-    SECTION("TMA Warp Specialized 2SM - Auto stage count")
+    SECTION("TMA Warp Specialized Cooperative - Auto stage count")
     {
         auto C = torch::zeros({M, N}, options_bf16);
-        sgemm_cutlass_blackwell_bf16_tma_warp_specialized_2sm_auto(A, B, C);
+        sgemm_cutlass_blackwell_bf16_tma_warp_specialized_cooperative_auto(A, B, C);
         REQUIRE(tensors_are_close(C, ref, TOLERANCE_BF16));
     }
 
-    SECTION("TMA Warp Specialized 2SM - Constant stage count")
+    SECTION("TMA Warp Specialized Cooperative - Constant stage count")
     {
         auto C = torch::zeros({M, N}, options_bf16);
-        sgemm_cutlass_blackwell_bf16_tma_warp_specialized_2sm_constant(A, B, C);
+        sgemm_cutlass_blackwell_bf16_tma_warp_specialized_cooperative_constant(A, B, C);
         REQUIRE(tensors_are_close(C, ref, TOLERANCE_BF16));
     }
 
-    SECTION("TMA Warp Specialized 2SM Persistent - Auto stage count")
+    SECTION("TMA Warp Specialized Persistent - Auto stage count")
     {
         auto C = torch::zeros({M, N}, options_bf16);
-        sgemm_cutlass_blackwell_bf16_tma_warp_specialized_2sm_persistent_auto(A, B, C);
+        sgemm_cutlass_blackwell_bf16_tma_warp_specialized_persistent_auto(A, B, C);
         REQUIRE(tensors_are_close(C, ref, TOLERANCE_BF16));
     }
 
-    SECTION("TMA Warp Specialized 2SM Persistent - Constant stage count")
+    SECTION("TMA Warp Specialized Persistent - Constant stage count")
     {
         auto C = torch::zeros({M, N}, options_bf16);
-        sgemm_cutlass_blackwell_bf16_tma_warp_specialized_2sm_persistent_constant(A, B, C);
+        sgemm_cutlass_blackwell_bf16_tma_warp_specialized_persistent_constant(A, B, C);
         REQUIRE(tensors_are_close(C, ref, TOLERANCE_BF16));
     }
 
-    SECTION("TMA Warp Specialized 2SM Stream-K - Auto stage count")
+    SECTION("TMA Warp Specialized Stream-K - Auto stage count")
     {
         auto C = torch::zeros({M, N}, options_bf16);
-        sgemm_cutlass_blackwell_bf16_tma_warp_specialized_2sm_streamk_auto(A, B, C);
+        sgemm_cutlass_blackwell_bf16_tma_warp_specialized_streamk_auto(A, B, C);
         REQUIRE(tensors_are_close(C, ref, TOLERANCE_BF16));
     }
 
-    SECTION("TMA Warp Specialized 2SM Stream-K - Constant stage count")
+    SECTION("TMA Warp Specialized Stream-K - Constant stage count")
     {
         auto C = torch::zeros({M, N}, options_bf16);
-        sgemm_cutlass_blackwell_bf16_tma_warp_specialized_2sm_streamk_constant(A, B, C);
+        sgemm_cutlass_blackwell_bf16_tma_warp_specialized_streamk_constant(A, B, C);
         REQUIRE(tensors_are_close(C, ref, TOLERANCE_BF16));
-    }
-}
-
-// FP16 Kernel Variant Tests
-TEST_CASE("SGEMM CUTLASS Blackwell FP16 - Kernel variants", "[cutlass_blackwell][fp16][variants]")
-{
-    int device;
-    cudaGetDevice(&device);
-    cudaDeviceProp prop;
-    cudaGetDeviceProperties(&prop, device);
-
-    if (prop.major < 10) {
-        WARN("Skipping FP16 variants test on SM " << prop.major << "." << prop.minor);
-        return;
-    }
-
-    torch::manual_seed(42);
-    int M = 512, N = 512, K = 512;
-    auto options_fp16 = torch::TensorOptions().dtype(torch::kHalf).device(torch::kCUDA);
-
-    auto A = torch::rand({M, K}, options_fp16);
-    auto B = torch::rand({K, N}, options_fp16);
-    auto ref = torch::matmul(A, B);
-
-    SECTION("TMA Warp Specialized 2SM - Auto stage count")
-    {
-        auto C = torch::zeros({M, N}, options_fp16);
-        sgemm_cutlass_blackwell_fp16_tma_warp_specialized_2sm_auto(A, B, C);
-        REQUIRE(tensors_are_close(C, ref, TOLERANCE_FP16));
-    }
-
-    SECTION("TMA Warp Specialized 2SM - Constant stage count")
-    {
-        auto C = torch::zeros({M, N}, options_fp16);
-        sgemm_cutlass_blackwell_fp16_tma_warp_specialized_2sm_constant(A, B, C);
-        REQUIRE(tensors_are_close(C, ref, TOLERANCE_FP16));
-    }
-
-    SECTION("TMA Warp Specialized 2SM Persistent - Auto stage count")
-    {
-        auto C = torch::zeros({M, N}, options_fp16);
-        sgemm_cutlass_blackwell_fp16_tma_warp_specialized_2sm_persistent_auto(A, B, C);
-        REQUIRE(tensors_are_close(C, ref, TOLERANCE_FP16));
-    }
-
-    SECTION("TMA Warp Specialized 2SM Persistent - Constant stage count")
-    {
-        auto C = torch::zeros({M, N}, options_fp16);
-        sgemm_cutlass_blackwell_fp16_tma_warp_specialized_2sm_persistent_constant(A, B, C);
-        REQUIRE(tensors_are_close(C, ref, TOLERANCE_FP16));
-    }
-
-    SECTION("TMA Warp Specialized 2SM Stream-K - Auto stage count")
-    {
-        auto C = torch::zeros({M, N}, options_fp16);
-        sgemm_cutlass_blackwell_fp16_tma_warp_specialized_2sm_streamk_auto(A, B, C);
-        REQUIRE(tensors_are_close(C, ref, TOLERANCE_FP16));
-    }
-
-    SECTION("TMA Warp Specialized 2SM Stream-K - Constant stage count")
-    {
-        auto C = torch::zeros({M, N}, options_fp16);
-        sgemm_cutlass_blackwell_fp16_tma_warp_specialized_2sm_streamk_constant(A, B, C);
-        REQUIRE(tensors_are_close(C, ref, TOLERANCE_FP16));
     }
 }
 
@@ -392,37 +248,6 @@ TEST_CASE("SGEMM CUTLASS Blackwell - Edge cases", "[cutlass_blackwell][edge_case
         REQUIRE(tensors_are_close(C, ref, TOLERANCE_BF16));
     }
 
-    SECTION("FP16 - Rectangular tall matrix (2048x512x1024)")
-    {
-        int M = 2048, N = 512, K = 1024;
-        auto options_fp16 = torch::TensorOptions().dtype(torch::kHalf).device(torch::kCUDA);
-
-        auto A = torch::rand({M, K}, options_fp16);
-        auto B = torch::rand({K, N}, options_fp16);
-        auto C = torch::zeros({M, N}, options_fp16);
-
-        sgemm_cutlass_blackwell_fp16(A, B, C);
-
-        auto ref = torch::matmul(A, B);
-
-        REQUIRE(tensors_are_close(C, ref, TOLERANCE_FP16));
-    }
-
-    SECTION("FP16 - Rectangular wide matrix (512x2048x1024)")
-    {
-        int M = 512, N = 2048, K = 1024;
-        auto options_fp16 = torch::TensorOptions().dtype(torch::kHalf).device(torch::kCUDA);
-
-        auto A = torch::rand({M, K}, options_fp16);
-        auto B = torch::rand({K, N}, options_fp16);
-        auto C = torch::zeros({M, N}, options_fp16);
-
-        sgemm_cutlass_blackwell_fp16(A, B, C);
-
-        auto ref = torch::matmul(A, B);
-
-        REQUIRE(tensors_are_close(C, ref, TOLERANCE_FP16));
-    }
 }
 
 // Performance comparison test (optional - just verifies all variants produce same results)
@@ -454,10 +279,10 @@ TEST_CASE("SGEMM CUTLASS Blackwell - Variant consistency", "[cutlass_blackwell][
         auto C_streamk = torch::zeros({M, N}, options_bf16);
 
         sgemm_cutlass_blackwell_bf16(A, B, C_default);
-        sgemm_cutlass_blackwell_bf16_tma_warp_specialized_2sm_auto(A, B, C_auto);
-        sgemm_cutlass_blackwell_bf16_tma_warp_specialized_2sm_constant(A, B, C_constant);
-        sgemm_cutlass_blackwell_bf16_tma_warp_specialized_2sm_persistent_auto(A, B, C_persistent);
-        sgemm_cutlass_blackwell_bf16_tma_warp_specialized_2sm_streamk_auto(A, B, C_streamk);
+        sgemm_cutlass_blackwell_bf16_tma_warp_specialized_cooperative_auto(A, B, C_auto);
+        sgemm_cutlass_blackwell_bf16_tma_warp_specialized_cooperative_constant(A, B, C_constant);
+        sgemm_cutlass_blackwell_bf16_tma_warp_specialized_persistent_auto(A, B, C_persistent);
+        sgemm_cutlass_blackwell_bf16_tma_warp_specialized_streamk_auto(A, B, C_streamk);
 
         // All variants should produce nearly identical results
         REQUIRE(tensors_are_close(C_default, C_auto, 1e-5f));
@@ -466,28 +291,4 @@ TEST_CASE("SGEMM CUTLASS Blackwell - Variant consistency", "[cutlass_blackwell][
         REQUIRE(tensors_are_close(C_default, C_streamk, TOLERANCE_BF16));
     }
 
-    SECTION("FP16 - All variants produce consistent results")
-    {
-        auto options_fp16 = torch::TensorOptions().dtype(torch::kHalf).device(torch::kCUDA);
-        auto A = torch::rand({M, K}, options_fp16);
-        auto B = torch::rand({K, N}, options_fp16);
-
-        auto C_default = torch::zeros({M, N}, options_fp16);
-        auto C_auto = torch::zeros({M, N}, options_fp16);
-        auto C_constant = torch::zeros({M, N}, options_fp16);
-        auto C_persistent = torch::zeros({M, N}, options_fp16);
-        auto C_streamk = torch::zeros({M, N}, options_fp16);
-
-        sgemm_cutlass_blackwell_fp16(A, B, C_default);
-        sgemm_cutlass_blackwell_fp16_tma_warp_specialized_2sm_auto(A, B, C_auto);
-        sgemm_cutlass_blackwell_fp16_tma_warp_specialized_2sm_constant(A, B, C_constant);
-        sgemm_cutlass_blackwell_fp16_tma_warp_specialized_2sm_persistent_auto(A, B, C_persistent);
-        sgemm_cutlass_blackwell_fp16_tma_warp_specialized_2sm_streamk_auto(A, B, C_streamk);
-
-        // All variants should produce nearly identical results
-        REQUIRE(tensors_are_close(C_default, C_auto, 1e-5f));
-        REQUIRE(tensors_are_close(C_default, C_constant, TOLERANCE_FP16));
-        REQUIRE(tensors_are_close(C_default, C_persistent, TOLERANCE_FP16));
-        REQUIRE(tensors_are_close(C_default, C_streamk, TOLERANCE_FP16));
-    }
 }

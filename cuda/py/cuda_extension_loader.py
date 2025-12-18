@@ -161,26 +161,39 @@ def create_cuda_extension(
     if torch.cuda.is_available():
         device_props = torch.cuda.get_device_properties(0)
         compute_capability = device_props.major * 10 + device_props.minor
-        has_hopper = (compute_capability >= 90) and load_hopper_kernels
 
-        if verbose:
-            logger.info(f"🖥️  GPU: {device_props.name}")
-            logger.info(
-                f"   Compute Capability: SM{device_props.major}.{device_props.minor}"
-            )
-            if has_hopper:
+        # Blackwell (SM120+) should NOT load Hopper kernels
+        if compute_capability >= 120:
+            has_hopper = False
+            if verbose:
+                logger.info(f"🖥️  GPU: {device_props.name}")
                 logger.info(
-                    f"   ✅ Hopper (SM90+) support detected - loading Hopper kernels"
+                    f"   Compute Capability: SM{device_props.major}.{device_props.minor}"
                 )
-            elif not load_hopper_kernels:
-                if compute_capability >= 90:
+                logger.info(
+                    f"   ℹ️  Blackwell (SM120+) detected - skipping Hopper kernels"
+                )
+        else:
+            has_hopper = (compute_capability >= 90) and load_hopper_kernels
+
+            if verbose:
+                logger.info(f"🖥️  GPU: {device_props.name}")
+                logger.info(
+                    f"   Compute Capability: SM{device_props.major}.{device_props.minor}"
+                )
+                if has_hopper:
                     logger.info(
-                        f"   ℹ️  Hopper kernels explicitly disabled via flag - skipping Hopper kernels"
+                        f"   ✅ Hopper (SM90+) support detected - loading Hopper kernels"
                     )
-                else:
-                    logger.warning(
-                        f"   ⚠️  Hopper (SM90+) not available on this GPU - skipping Hopper kernels"
-                    )
+                elif not load_hopper_kernels:
+                    if compute_capability >= 90:
+                        logger.info(
+                            f"   ℹ️  Hopper kernels explicitly disabled via flag - skipping Hopper kernels"
+                        )
+                    else:
+                        logger.warning(
+                            f"   ⚠️  Hopper (SM90+) not available on this GPU - skipping Hopper kernels"
+                        )
 
     else:
         if verbose:
