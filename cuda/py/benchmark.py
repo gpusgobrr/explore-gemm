@@ -60,8 +60,8 @@ import webbrowser
 
 # Set CUDA paths to match CMakeLists.txt configuration
 # Must be set BEFORE importing torch
-os.environ["CUDA_HOME"] = "/usr/local/cuda"
-os.environ["CUDA_PATH"] = "/usr/local/cuda"
+os.environ.setdefault("CUDA_HOME", "/usr/local/cuda")
+os.environ.setdefault("CUDA_PATH", "/usr/local/cuda")
 os.environ["PATH"] = f"/usr/local/cuda/bin:{os.environ.get('PATH', '')}"
 os.environ["LD_LIBRARY_PATH"] = (
     f"/usr/local/cuda/lib64:{os.environ.get('LD_LIBRARY_PATH', '')}"
